@@ -19,19 +19,8 @@ backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detec
 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)) 
 
 # === HỆ THỐNG TRACKING VÀ ĐẾM ===
-next_object_id = 0
-tracked_objects = {}  
-counted_objects = set()
+counted_ids = set()          # Tập hợp chứa các ID đã được đếm (sử dụng track_id từ YOLO)
 total_unique_count = 0
-
-def get_object_center(box):
-    """Lấy tâm của bounding box"""
-    x, y, w, h = box
-    return (x + w // 2, y + h // 2)
-
-def calculate_distance(p1, p2):
-    """Tính khoảng cách Euclidean giữa 2 điểm"""
-    return np.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
 
 def is_inside_roi(box, roi):
     """Kiểm tra tâm của bounding box có nằm trong ROI không"""
@@ -39,69 +28,6 @@ def is_inside_roi(box, roi):
     cx = x + w // 2
     cy = y + h // 2
     return cv2.pointPolygonTest(roi, (cx, cy), False) >= 0
-
-def update_tracking_and_count(bboxes_display, roi_display, frame_count, max_distance=50):
-    """Cập nhật tracking và đếm các đối tượng DUY NHẤT"""
-    global next_object_id, total_unique_count, tracked_objects, counted_objects
-    
-    current_detections = []
-    
-    for box in bboxes_display:
-        center = get_object_center(box)
-        inside_roi = cv2.pointPolygonTest(roi_display, center, False) >= 0
-        current_detections.append({
-            'box': box,
-            'center': center,
-            'inside_roi': inside_roi
-        })
-    
-    matched_current_ids = set()
-    
-    for detection in current_detections:
-        center = detection['center']
-        inside_roi = detection['inside_roi']
-        
-        matched_id = None
-        min_dist = float('inf')
-        
-        for obj_id, obj_data in tracked_objects.items():
-            dist = calculate_distance(center, obj_data['last_position'])
-            if dist < min_dist and dist < max_distance:
-                min_dist = dist
-                matched_id = obj_id
-        
-        if matched_id is not None:
-            matched_current_ids.add(matched_id)
-            tracked_objects[matched_id]['last_position'] = center
-            
-            if inside_roi and not tracked_objects[matched_id]['counted']:
-                total_unique_count += 1
-                tracked_objects[matched_id]['counted'] = True
-                counted_objects.add(matched_id)
-        else:
-            tracked_objects[next_object_id] = {
-                'last_position': center,
-                'counted': False,
-                'first_seen_frame': frame_count
-            }
-            
-            if inside_roi:
-                total_unique_count += 1
-                tracked_objects[next_object_id]['counted'] = True
-                counted_objects.add(next_object_id)
-            
-            matched_current_ids.add(next_object_id)
-            next_object_id += 1
-    
-    objects_to_remove = []
-    for obj_id in list(tracked_objects.keys()):
-        if obj_id not in matched_current_ids and tracked_objects[obj_id]['counted']:
-            objects_to_remove.append(obj_id)
-    
-    for obj_id in objects_to_remove:
-        del tracked_objects[obj_id]
-    
-    return total_unique_count
 
 # --- MENU CHỌN NGUỒN ---
 print("\n" + "="*40)
@@ -181,15 +107,21 @@ while True:
         # 3. XỬ LÝ CANNY (Chạy ngầm phát hiện biên cạnh)
         edges = cv2.Canny(fg_mask, 50, 150)
         
-        # 4. NHẬN DẠNG VỚI YOLO11
-        bboxes, class_ids, scores = od.detect(frame, conf=0.35)
+        # 4. NHẬN DẠNG VỚI YOLO (Lấy cả track_ids)
+        bboxes, class_ids, scores, track_ids = od.detect(frame, conf=0.35, track=True, persist=True)
+
         
         validated_bboxes = []
         validated_ids = []
         validated_scores = []
+        validated_tids = []
         
         # 5. BỘ LỌC TỔNG HỢP (KẾT HỢP NGẦM): Loại bỏ đối tượng tĩnh / nhiễu
-        for box, cid, score in zip(bboxes, class_ids, scores):
+        for box, cid, score, tid in zip(bboxes, class_ids, scores, track_ids):
+            # Bỏ qua đối tượng chưa có ID ổn định
+            if tid == -1:
+                continue
+                
             x_disp = int(box[0] * scale_x)
             y_disp = int(box[1] * scale_y)
             w_disp = int(box[2] * scale_x)
@@ -216,22 +148,26 @@ while True:
                 validated_bboxes.append([x_disp, y_disp, w_disp, h_disp])
                 validated_ids.append(cid)
                 validated_scores.append(score)
+                validated_tids.append(tid)
         
-        # 6. CẬP NHẬT TRACKING VÀ ĐẾM
-        total_unique = update_tracking_and_count(validated_bboxes, ROI_display, frame_count)
-        
-        # Lọc riêng các đối tượng trong ROI để chuẩn bị vẽ box
+        # 6. CẬP NHẬT ĐẾM SỬ DỤNG TRACK ID TỪ YOLO
+        # Lọc các đối tượng trong ROI để đếm
         current_in_roi = 0
         filtered_boxes = []
         filtered_ids = []
         filtered_scores = []
         
-        for box_disp, cid, score in zip(validated_bboxes, validated_ids, validated_scores):
+        for box_disp, cid, score, tid in zip(validated_bboxes, validated_ids, validated_scores, validated_tids):
             if is_inside_roi(box_disp, ROI_display):
                 current_in_roi += 1
                 filtered_boxes.append(box_disp)
                 filtered_ids.append(cid)
                 filtered_scores.append(score)
+                
+                # Đếm đối tượng nếu chưa được đếm
+                if tid not in counted_ids:
+                    counted_ids.add(tid)
+                    total_unique_count += 1
         
         # 7. ĐỒ HỌA VÀ HIỂN THỊ KẾT QUẢ TỔNG HỢP DUY NHẤT
         frame_result = frame_display.copy()
@@ -242,7 +178,7 @@ while True:
         cv2.putText(frame_result, f'Objects in ROI now: {current_in_roi}', (10, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
-        cv2.putText(frame_result, f'TOTAL COUNT: {total_unique}', (10, 85), 
+        cv2.putText(frame_result, f'TOTAL COUNT: {total_unique_count}', (10, 85), 
                     cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
         
         # Chỉ gọi duy nhất 1 cửa sổ hiển thị tổng hợp
@@ -257,9 +193,9 @@ while True:
         print("[PAUSE]" if paused else "[RESUME]")
     # elif key == ord('r'):  # Reset
     #     total_unique_count = 0
-    #     counted_objects.clear()
-    #     tracked_objects.clear()
-    #     next_object_id = 0
+    #     counted_ids.clear()
+    #     # Không cần tracked_objects và next_object_id nữa
+
 # --- KẾT THÚC ---
 print("KẾT QUẢ GIÁM SÁT SAU CÙNG:\n")
 print(f"Tổng số đối tượng DUY NHẤT đã đi qua ROI: {total_unique_count}")
