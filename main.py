@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+from collections import deque
 from object_detection import ObjectDetector
 import sys
 import os
@@ -18,9 +19,14 @@ print("Khởi tạo thuật toán Background Subtractor MOG2...")
 backSub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=50, detectShadows=True)
 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)) 
 
-# === HỆ THỐNG TRACKING VÀ ĐẾM ===
-counted_ids = set()          # Tập hợp chứa các ID đã được đếm (sử dụng track_id từ YOLO)
+# === HỆ THỐNG ĐẾM VÀ PHÂN LOẠI ===
+counted_ids = set()          
 total_unique_count = 0
+
+# [THÊM MỚI] Các biến lưu trữ cho hệ thống Sorter
+detailed_stats = {}          # Lưu thống kê: {'Táo': {'S (Nho)': 0, 'M (Vua)': 0, 'L (Lon)': 0}}
+trajectories = {}            # Lưu quỹ đạo: {track_id: deque(maxlen=30)}
+fruit_sizes = {}             # Lưu size cố định của từng quả: {track_id: "L (Lon)"}
 
 def is_inside_roi(box, roi):
     """Kiểm tra tâm của bounding box có nằm trong ROI không"""
@@ -29,9 +35,17 @@ def is_inside_roi(box, roi):
     cy = y + h // 2
     return cv2.pointPolygonTest(roi, (cx, cy), False) >= 0
 
+# [THÊM MỚI] Hàm đo kích thước
+def determine_size(w, h):
+    area = w * h
+    # Bạn có thể tinh chỉnh các con số này cho phù hợp với camera thực tế
+    if area > 15000: return "L (Lon)"
+    elif area > 8000: return "M (Vua)"
+    else: return "S (Nho)"
+
 # --- MENU CHỌN NGUỒN ---
 print("\n" + "="*40)
-print("HỆ THỐNG GIÁM SÁT THÔNG MINH")
+print("HỆ THỐNG GIÁM SÁT VÀ PHÂN LOẠI THÔNG MINH")
 print("="*40)
 print("1. Sử dụng Webcam (Real-time)")
 print("2. Sử dụng File Video")
@@ -150,31 +164,83 @@ while True:
                 validated_scores.append(score)
                 validated_tids.append(tid)
         
-        # 6. CẬP NHẬT ĐẾM SỬ DỤNG TRACK ID TỪ YOLO
-        # Lọc các đối tượng trong ROI để đếm
+        # ==========================================================
+        # 6. LOGIC CẬP NHẬT SORTER (QUỸ ĐẠO, SIZE & ĐẾM PHÂN LOẠI)
+        # ==========================================================
         current_in_roi = 0
-        filtered_boxes = []
-        filtered_ids = []
-        filtered_scores = []
+        filtered_boxes, filtered_ids, filtered_scores, filtered_tids = [], [], [], []
         
         for box_disp, cid, score, tid in zip(validated_bboxes, validated_ids, validated_scores, validated_tids):
+            
+            # 6.1 Cập nhật Quỹ đạo (Đuôi đỏ)
+            cx, cy = box_disp[0] + box_disp[2]//2, box_disp[1] + box_disp[3]//2
+            if tid not in trajectories:
+                trajectories[tid] = deque(maxlen=30)
+            trajectories[tid].append((cx, cy))
+            
+            # 6.2 Đo kích thước (Chỉ đo 1 lần cho mỗi trái cây)
+            if tid not in fruit_sizes:
+                fruit_sizes[tid] = determine_size(box_disp[2], box_disp[3])
+                
+            # 6.3 Logic Đếm & Ghi nhận vào ROI
             if is_inside_roi(box_disp, ROI_display):
                 current_in_roi += 1
                 filtered_boxes.append(box_disp)
                 filtered_ids.append(cid)
                 filtered_scores.append(score)
+                filtered_tids.append(tid) # Gửi Track ID đi để vẽ lên màn hình
                 
                 # Đếm đối tượng nếu chưa được đếm
                 if tid not in counted_ids:
                     counted_ids.add(tid)
                     total_unique_count += 1
+                    
+                    # Cập nhật Thống kê chi tiết (Sorter logic)
+                    c_name = od.classes.get(cid, "Unknown")
+                    f_size = fruit_sizes[tid]
+                    if c_name not in detailed_stats:
+                        detailed_stats[c_name] = {'S (Nho)': 0, 'M (Vua)': 0, 'L (Lon)': 0}
+                    detailed_stats[c_name][f_size] += 1
         
-        # 7. ĐỒ HỌA VÀ HIỂN THỊ KẾT QUẢ TỔNG HỢP DUY NHẤT
+        # ==========================================================
+        # 7. ĐỒ HỌA GIAO DIỆN CÔNG NGHIỆP (DASHBOARD)
+        # ==========================================================
         frame_result = frame_display.copy()
-        frame_result = od.draw_boxes(frame_result, filtered_boxes, filtered_ids, filtered_scores, line_thickness=2)
         
+        # 7.1 Vẽ quỹ đạo (Đuôi bám theo trái cây)
+        for tid in validated_tids: # Chỉ vẽ các quả đang lọt qua lớp lọc MOG2
+            if tid in trajectories:
+                pts = list(trajectories[tid])
+                for i in range(1, len(pts)):
+                    cv2.line(frame_result, pts[i-1], pts[i], (0, 0, 255), max(1, int(3 - i/10)))
+
+        # 7.2 Vẽ Bounding Boxes bằng hàm của ObjectDetector
+        # [QUAN TRỌNG]: Truyền thêm filtered_tids để hàm cũ hiện #ID
+        frame_result = od.draw_boxes(frame_result, filtered_boxes, filtered_ids, filtered_scores, track_ids=filtered_tids, line_thickness=2)
+        
+        # 7.3 Vẽ Size trực tiếp cạnh Bounding Box
+        for box_disp, tid in zip(filtered_boxes, filtered_tids):
+            x, y, w, h = box_disp
+            size_label = fruit_sizes.get(tid, "Unknown")
+            cv2.putText(frame_result, f"| Size: {size_label}", (x + w - 10, y - 5), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+        # 7.4 Vẽ ROI đa giác
         cv2.polylines(frame_result, [ROI_display], True, (0, 255, 255), 2)
         
+        # 7.5 Vẽ Bảng Thống kê chi tiết
+        cv2.rectangle(frame_result, (10, 130), (320, 360), (0, 0, 0), -1)
+        cv2.putText(frame_result, "THONG KE CHI TIET", (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        
+        y_pos = 190
+        for fruit, sizes in detailed_stats.items():
+            cv2.putText(frame_result, f"{fruit}:", (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            y_pos += 25
+            for size, count in sizes.items():
+                cv2.putText(frame_result, f"  - Size {size}: {count}", (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+                y_pos += 25
+
+        # 7.6 Vẽ đếm tổng (Giữ nguyên của bạn)
         cv2.putText(frame_result, f'Objects in ROI now: {current_in_roi}', (10, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
@@ -197,9 +263,15 @@ while True:
     #     # Không cần tracked_objects và next_object_id nữa
 
 # --- KẾT THÚC ---
+print("\n" + "="*50)
 print("KẾT QUẢ GIÁM SÁT SAU CÙNG:\n")
-print(f"Tổng số đối tượng DUY NHẤT đã đi qua ROI: {total_unique_count}")
 print(f"Tổng số frame hình đã được xử lý     : {frame_count}")
+print(f"Tổng số đối tượng DUY NHẤT đã đi qua ROI: {total_unique_count}")
+print("-" * 40)
+for fruit, sizes in detailed_stats.items():
+    print(f"[{fruit.upper()}]")
+    for size, count in sizes.items():
+        print(f" - Size {size}: {count}")
 print("="*50)
 
 cap.release()
