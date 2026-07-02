@@ -1,7 +1,7 @@
 import cv2
 from ultralytics import YOLO
 import numpy as np
-#chương 5: sử dụng yolo để nhận diện ảnh
+
 class ObjectDetector:
     def __init__(self, model_path="best.pt", min_score_thresh=0.35):
         """
@@ -19,31 +19,44 @@ class ObjectDetector:
         # Lấy class names từ model
         self.classes = self.model.names
         
-    def detect(self, frame, conf=0.35, imgsz=640, classes=None):
+    def detect(self, frame, conf=0.35, imgsz=640, classes=None, track=False, persist=False):
         """
-        Phát hiện đối tượng trong frame
+        Phát hiện đối tượng trong frame (hỗ trợ tracking)
         
         Args:
             frame: ảnh đầu vào
             conf: ngưỡng confidence
             imgsz: kích thước ảnh đầu vào
             classes: list các class ID cần lọc (VD: [0,2,3] hoặc None để lấy tất cả)
+            track: Bật tracking (trả về track_ids)
+            persist: Giữ tracking qua các frame
             
         Returns:
-            boxes: list of [x, y, width, height]
-            class_ids: list of class IDs
-            scores: list of confidence scores
+            Nếu track=False: boxes, class_ids, scores
+            Nếu track=True: boxes, class_ids, scores, track_ids
         """
         if conf is None:
             conf = self.min_score_thresh
             
-        # Chạy YOLO detection với filter classes
-        
-        results = self.model(frame, conf=conf, imgsz=imgsz, classes=classes, verbose=False)
+        # Chạy YOLO detection với tracking nếu được yêu cầu
+        if track:
+            # Sử dụng tracker của YOLO
+            results = self.model.track(
+                frame, 
+                conf=conf, 
+                imgsz=imgsz, 
+                classes=classes, 
+                persist=persist,
+                tracker="bytetrack.yaml",  # Hoặc "botsort.yaml"
+                verbose=False
+            )
+        else:
+            results = self.model(frame, conf=conf, imgsz=imgsz, classes=classes, verbose=False)
         
         boxes = []
         class_ids = []
         scores = []
+        track_ids = []
         
         # Lấy kết quả từ frame đầu tiên
         if len(results) > 0:
@@ -68,27 +81,39 @@ class ObjectDetector:
                     boxes.append([x, y, w, h])
                     class_ids.append(class_id)
                     scores.append(confidence)
+                    
+                    # Lấy track ID nếu có
+                    if track and hasattr(box, 'id'):
+                        track_id = int(box.id[0].tolist())
+                        track_ids.append(track_id)
+                    elif track:
+                        # Nếu không có track_id, tạo temporary
+                        track_ids.append(-1)
         
-        return boxes, class_ids, scores
+        if track:
+            return boxes, class_ids, scores, track_ids
+        else:
+            return boxes, class_ids, scores
     
-    def draw_boxes(self, frame, boxes, class_ids, scores, line_thickness=2):
+    def draw_boxes(self, frame, boxes, class_ids, scores, track_ids=None, line_thickness=2):
         """
-        Vẽ bounding boxes lên frame
+        Vẽ bounding boxes lên frame (có thể hiển thị cả track_id)
         """
-        for box, class_id, score in zip(boxes, class_ids, scores):
+        # Màu sắc theo class
+        colors = [
+            (0, 255, 0),    # Green
+            (255, 0, 0),    # Blue
+            (0, 0, 255),    # Red
+            (255, 255, 0),  # Cyan
+            (255, 0, 255),  # Magenta
+            (0, 255, 255),  # Yellow
+            (128, 0, 0),    # Dark Blue
+            (0, 128, 0)     # Dark Green
+        ]
+        
+        for i, (box, class_id, score) in enumerate(zip(boxes, class_ids, scores)):
             x, y, w, h = box
             
-            # Màu sắc theo class
-            colors = [
-                (0, 255, 0),    # Green
-                (255, 0, 0),    # Blue
-                (0, 0, 255),    # Red
-                (255, 255, 0),  # Cyan
-                (255, 0, 255),  # Magenta
-                (0, 255, 255),  # Yellow
-                (128, 0, 0),    # Dark Blue
-                (0, 128, 0)     # Dark Green
-            ]
             color = colors[class_id % len(colors)]
             
             # Vẽ khung
@@ -96,7 +121,11 @@ class ObjectDetector:
             
             # Tạo label
             class_name = self.classes.get(class_id, f'Class_{class_id}')
-            label = f'{class_name}: {score:.2f}'
+            
+            if track_ids is not None and i < len(track_ids):
+                label = f'#{track_ids[i]} {class_name}: {score:.2f}'
+            else:
+                label = f'{class_name}: {score:.2f}'
             
             # Vẽ nền cho label
             label_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
