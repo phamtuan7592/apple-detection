@@ -39,10 +39,10 @@ Công cụ này cho phép bạn giới hạn khu vực nhận diện để tăng
 
 ## 🚀 B.3 Chạy hệ thống
 
-7.  **Cấu hình tham số:** Mở tệp `object.py` bằng trình soạn thảo (VS Code, Notepad++,...) để chỉnh sửa đường dẫn mô hình (`model path`) và đường dẫn video nếu cần.
+7.  **Cấu hình tham số:** Mở tệp `main.py` bằng trình soạn thảo (VS Code, Notepad++,...) để chỉnh sửa đường dẫn mô hình (`model path`) và đường dẫn video nếu cần.
 8.  **Khởi chạy:**
     ```bash
-    python object.py
+    python main.py
     ```
 9.  **Chọn nguồn đầu vào:** Khi màn hình hiển thị yêu cầu, chọn:
     * **Phím `1`**: Chạy với Webcam.
