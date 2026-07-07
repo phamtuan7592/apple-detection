@@ -23,7 +23,7 @@ kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 counted_ids = set()          
 total_unique_count = 0
 
-# [THÊM MỚI] Các biến lưu trữ cho hệ thống Sorter
+#  Các biến lưu trữ cho hệ thống Sorter
 detailed_stats = {}          # Lưu thống kê: {'Táo': {'S (Nho)': 0, 'M (Vua)': 0, 'L (Lon)': 0}}
 trajectories = {}            # Lưu quỹ đạo: {track_id: deque(maxlen=30)}
 fruit_sizes = {}             # Lưu size cố định của từng quả: {track_id: "L (Lon)"}
@@ -35,12 +35,12 @@ def is_inside_roi(box, roi):
     cy = y + h // 2
     return cv2.pointPolygonTest(roi, (cx, cy), False) >= 0
 
-# [THÊM MỚI] Hàm đo kích thước
+#  Hàm đo kích thước
 def determine_size(w, h):
     area = w * h
-    # Bạn có thể tinh chỉnh các con số này cho phù hợp với camera thực tế
-    if area > 15000: return "L (Lon)"
-    elif area > 8000: return "M (Vua)"
+    # Có thể tinh chỉnh các con số này cho phù hợp với camera thực tế
+    if area > 6000: return "L (Lon)"
+    elif area > 3000: return "M (Vua)"
     else: return "S (Nho)"
 
 # --- MENU CHỌN NGUỒN ---
@@ -203,7 +203,7 @@ while True:
                     detailed_stats[c_name][f_size] += 1
         
         # ==========================================================
-        # 7. ĐỒ HỌA GIAO DIỆN CÔNG NGHIỆP (DASHBOARD)
+        # 7. DASHBOARD
         # ==========================================================
         frame_result = frame_display.copy()
         
@@ -240,7 +240,7 @@ while True:
                 cv2.putText(frame_result, f"  - Size {size}: {count}", (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
                 y_pos += 25
 
-        # 7.6 Vẽ đếm tổng (Giữ nguyên của bạn)
+        # 7.6 Vẽ đếm tổng
         cv2.putText(frame_result, f'Objects in ROI now: {current_in_roi}', (10, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         
